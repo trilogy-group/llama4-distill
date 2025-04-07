@@ -57,39 +57,77 @@ image = (
 h100_gpu = "H100" # Use string format
 a10g_gpu = "A10G" # Use string format
 
+# Path for the teacher model within the mounted volume (reflecting nested upload)
+TEACHER_MODEL_VOLUME_PATH = "/cache/Llama-4-Scout-17B-16E-Instruct/Llama-4-Scout-17B-16E-Instruct"
+
 # --- Helper Functions ---
 def load_model_and_processor(model_id, model_cache_dir, device="cuda", is_teacher=False):
-    """Loads a model and its processor, handling potential errors."""
-    print(f"Loading {('Teacher' if is_teacher else 'Student')} model: {model_id}")
-    try:
-        # Determine torch_dtype based on model or configuration
-        # Teacher (Llama 4 Scout) often benefits from bfloat16 on H100
-        # Student (Qwen) might use 'auto' or bfloat16/float16 depending on GPU
-        dtype_arg = torch.bfloat16 if is_teacher else "auto"
+    """Loads a model and its processor/tokenizer.
 
+    Args:
+        model_id (str): Hugging Face model ID or local path.
+        model_cache_dir (str): Path to the cache directory.
+        device (str): Device to load the model onto ('cuda' or 'cpu').
+        is_teacher (bool): Flag indicating if this is the teacher model.
+
+    Returns:
+        tuple: (model, processor)
+    """
+    print(f"Loading {'Teacher' if is_teacher else 'Student'} model: {model_id}")
+
+    load_path = model_id
+    if is_teacher:
+        # Teacher model is pre-downloaded in the volume
+        load_path = TEACHER_MODEL_VOLUME_PATH
+        print(f"Teacher model specified. Loading from volume path: {load_path}")
+        # Verify the path exists in the volume
+        if not os.path.exists(load_path):
+            print(f"ERROR: Teacher model path not found in volume: {load_path}")
+            print("Volume contents:")
+            try:
+                for item in os.listdir("/cache"):
+                    print(f"  - /cache/{item}")
+                if os.path.exists("/cache/Llama-4-Scout-17B-16E-Instruct"):
+                     for item in os.listdir("/cache/Llama-4-Scout-17B-16E-Instruct"):
+                         print(f"  - /cache/Llama-4-Scout-17B-16E-Instruct/{item}")
+            except Exception as e:
+                print(f"    Could not list volume contents: {e}")
+            raise FileNotFoundError(f"Teacher model path not found: {load_path}")
+
+    try:
+        # Load processor/tokenizer
+        # For teacher model from volume, processor/tokenizer info should be in the same directory
+        print(f"Attempting to load processor from: {load_path}")
         processor = AutoProcessor.from_pretrained(
-            model_id,
-            token=hf_token,
-            trust_remote_code=True,
-            cache_dir=model_cache_dir
+            load_path,
+            cache_dir=model_cache_dir,
+            trust_remote_code=True # Needed for some models like Qwen
         )
+        print("Processor loaded successfully.")
+
+        # Load model
+        print(f"Attempting to load model from: {load_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=dtype_arg,
-            device_map="auto", # Automatically maps layers to available devices (GPU/CPU)
-            token=hf_token,
-            trust_remote_code=True,
-            attn_implementation="flash_attention_2", # Use Flash Attention if available
-            cache_dir=model_cache_dir
+            load_path,
+            cache_dir=model_cache_dir,
+            torch_dtype=torch.bfloat16, # Use bfloat16 for efficiency on H100
+            device_map=device, # Let accelerate handle device placement
+            trust_remote_code=True, # Needed for some models like Qwen
+            # attn_implementation="flash_attention_2" # Enable Flash Attention 2 if installed and compatible
         )
-        print(f"Successfully loaded model and processor for {model_id}")
+        print("Model loaded successfully.")
         return model, processor
-    except ImportError as e:
-        print(f"Error loading model {model_id}: {e}")
-        print("This might be due to missing dependencies (e.g., flash-attn) or trust_remote_code issues.")
+    except OSError as e:
+        # Specific handling for Hugging Face Hub errors (e.g., gated repo access for student)
+        print(f"An OSError occurred while loading model {model_id} (path: {load_path}): {e}")
+        if "gated repo" in str(e) and not is_teacher:
+             print("This might be a gated repository access issue for the student model.")
+             print("Ensure the HF_TOKEN secret is correctly configured and grants access.")
+        elif "Connection error" in str(e):
+             print("This looks like a network issue connecting to Hugging Face Hub.")
         raise
     except Exception as e:
-        print(f"An unexpected error occurred while loading model {model_id}: {e}")
+        print(f"An unexpected error occurred while loading model {model_id} (path: {load_path}): {e}")
         raise
 
 # --- Data Preprocessing ---
