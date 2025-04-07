@@ -61,7 +61,7 @@ model_cache_volume = modal.Volume.from_name(
 image = (
     modal.Image.from_registry(f"nvidia/cuda:{CUDA_TAG}", add_python="3.10")
     # Install critical build dependencies explicitly first (might be redundant with CUDA image, but safe)
-    .pip_install("packaging", "torch", "numpy") # Combine installs
+    .pip_install("packaging", "torch", "numpy", "sentencepiece") # Combine installs
     # Then install the rest from the requirements file
     .pip_install_from_requirements("requirements-modal.txt")
     # Mount the raw data file (no need to mount .env as secret handles it)
