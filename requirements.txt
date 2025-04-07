@@ -1,0 +1,24 @@
+# Core dependencies for Modal remote execution & local triggering
+modal
+transformers>=4.51.0 # For Llama 4
+torch # Needed in Modal image
+python-dotenv # For local .env reading
+accelerate # Often helpful with transformers in Modal image
+
+# Dependencies primarily for Modal execution environment
+# These might cause local install issues but are needed in the container image
+# Modal's image build handles installing these correctly.
+# flash-attn # Efficient attention (ensure compatibility with CUDA/torch)
+datasets # For loading data within Modal functions
+soundfile # If needed by Qwen utils in Modal
+qwen_omni_utils # If required and installable via pip in Modal
+
+# Optional for logging (needed in Modal image if used)
+wandb # Optional, for logging
+
+# Add constraints for qwen_omni_utils dependencies to ensure Py3.12 compatibility
+librosa>=0.10.0 # Newer versions support Py3.12
+numba>=0.57.0 # Newer versions support Py3.12
+tqdm # Progress bars
+bitsandbytes # Model loading/quantization
+zstandard # Required for oscar dataset

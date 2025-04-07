@@ -1,0 +1,20 @@
+# Requirements for Modal execution environment
+modal # Modal library itself is needed inside the container too
+transformers>=4.41.2 # Ensure version meets Llama 4 needs if specified, Qwen might also have version reqs
+torch # Needed in Modal image
+python-dotenv # For loading secrets within Modal
+accelerate # Often helpful with transformers in Modal image
+packaging # Moved before flash-attn
+flash-attn==2.7.4.post1 # Efficient attention (ensure compatibility with CUDA/torch)
+datasets # For loading data within Modal functions
+soundfile # If needed by Qwen utils in Modal
+qwen_omni_utils # If required and installable via pip in Modal
+
+# Optional for logging
+# wandb
+
+# Constraints / Other dependencies
+librosa>=0.10.0 # Newer versions support Py3.12
+numba>=0.57.0 # Newer versions support Py3.12
+bitsandbytes # Model loading/quantization
+zstandard # Required for oscar dataset

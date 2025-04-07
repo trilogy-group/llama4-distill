@@ -1,0 +1,3 @@
+# Requirements for running Modal CLI locally
+modal
+python-dotenv
