@@ -1,11 +1,27 @@
-import modal
 import os
-import json
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
-from torch.utils.data import Dataset, DataLoader
-from dotenv import load_dotenv
+import modal
+from datasets import load_dataset
+from transformers import (
+    AutoModelForCausalLM, 
+    AutoProcessor, 
+    AutoTokenizer, 
+    LlamaForCausalLM, 
+    LlamaTokenizer, 
+    TrainingArguments, 
+    Trainer,
+    DataCollatorForSeq2Seq
+)
+from huggingface_hub import snapshot_download
+import logging
 from pathlib import Path
+import json
+import dotenv
+from dotenv import load_dotenv
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import AdamW
+import torch.nn.functional as F
+import torch.nn as nn
 
 # Load environment variables
 load_dotenv()
@@ -76,10 +92,22 @@ def load_model_and_processor(model_id, model_cache_dir, device="cuda", is_teache
     print(f"Loading {'Teacher' if is_teacher else 'Student'} model: {model_id}")
 
     load_path = model_id
+    model_class = AutoModelForCausalLM
+    processor_class = AutoProcessor # Default to Auto classes
+    tokenizer_class = AutoTokenizer
+
     if is_teacher:
-        # Teacher model is pre-downloaded in the volume
+        # Teacher model is pre-downloaded in the volume in original Llama format
         load_path = TEACHER_MODEL_VOLUME_PATH
+        model_class = LlamaForCausalLM # Use specific Llama class
+        # For Llama original format, we typically use LlamaTokenizer directly
+        # AutoProcessor might not work well, let's use LlamaTokenizer
+        # If Llama 4 Scout requires a specific Processor, we might need adjustment
+        processor_class = LlamaTokenizer # Use LlamaTokenizer for processor loading
+        tokenizer_class = LlamaTokenizer
+
         print(f"Teacher model specified. Loading from volume path: {load_path}")
+        print(f"Using explicit classes: {model_class.__name__}, {processor_class.__name__}")
         # Verify the path exists in the volume
         if not os.path.exists(load_path):
             print(f"ERROR: Teacher model path not found in volume: {load_path}")
@@ -96,23 +124,23 @@ def load_model_and_processor(model_id, model_cache_dir, device="cuda", is_teache
 
     try:
         # Load processor/tokenizer
-        # For teacher model from volume, processor/tokenizer info should be in the same directory
-        print(f"Attempting to load processor from: {load_path}")
-        processor = AutoProcessor.from_pretrained(
+        print(f"Attempting to load processor/tokenizer using {processor_class.__name__} from: {load_path}")
+        # Using AutoTokenizer/LlamaTokenizer as processor here, adjust if specific processor needed
+        processor = processor_class.from_pretrained(
             load_path,
             cache_dir=model_cache_dir,
-            trust_remote_code=True # Needed for some models like Qwen
+            trust_remote_code=True # May still be needed depending on tokenizer specifics
         )
-        print("Processor loaded successfully.")
+        print("Processor/Tokenizer loaded successfully.")
 
         # Load model
-        print(f"Attempting to load model from: {load_path}")
-        model = AutoModelForCausalLM.from_pretrained(
+        print(f"Attempting to load model using {model_class.__name__} from: {load_path}")
+        model = model_class.from_pretrained(
             load_path,
             cache_dir=model_cache_dir,
             torch_dtype=torch.bfloat16, # Use bfloat16 for efficiency on H100
             device_map=device, # Let accelerate handle device placement
-            trust_remote_code=True, # Needed for some models like Qwen
+            trust_remote_code=True, # May be needed for student model
             # attn_implementation="flash_attention_2" # Enable Flash Attention 2 if installed and compatible
         )
         print("Model loaded successfully.")
@@ -125,6 +153,10 @@ def load_model_and_processor(model_id, model_cache_dir, device="cuda", is_teache
              print("Ensure the HF_TOKEN secret is correctly configured and grants access.")
         elif "Connection error" in str(e):
              print("This looks like a network issue connecting to Hugging Face Hub.")
+        # Add check for potential format issues when loading teacher model explicitly
+        elif is_teacher and ("config.json" in str(e) or "Unrecognized model" in str(e)):
+            print(f"Error loading teacher model from volume path {load_path}.")
+            print("This might indicate the files are not in the expected format for LlamaForCausalLM/LlamaTokenizer, or essential files are missing.")
         raise
     except Exception as e:
         print(f"An unexpected error occurred while loading model {model_id} (path: {load_path}): {e}")
@@ -346,7 +378,6 @@ def train_distillation():
     # 3. Setup Optimizer
     print("\n--- Setting up Optimizer ---")
     try:
-        from torch.optim import AdamW
         optimizer = AdamW(student_model.parameters(), lr=LEARNING_RATE)
         print(f"Optimizer AdamW configured with LR={LEARNING_RATE}")
     except Exception as e:
@@ -358,11 +389,10 @@ def train_distillation():
     # Example: KL divergence loss expects log-probabilities
     # We need to apply softmax and log before passing to KLDivLoss
     # Temperature scaling is often applied here.
-    import torch.nn.functional as F
     temperature = 2.0 # Example temperature, hyperparameter to tune
     # KLDivLoss expects log-probabilities as input and probabilities as target
     # reduction='batchmean' averages the loss over the batch
-    kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean", log_target=False)
+    kl_loss_fn = nn.KLDivLoss(reduction="batchmean", log_target=False)
     print(f"Using KL Divergence Loss with temperature={temperature}")
 
     # --- Training Loop ---
